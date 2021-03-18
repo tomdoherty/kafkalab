@@ -1,0 +1,22 @@
+---
+- name: Converge
+  hosts: all
+
+  pre_tasks:
+    - name: set mode
+      set_fact:
+        kubernetes_mode: "{{ ansible_hostname }}"
+        controller_ip: controller
+        kubernetes_token: abcdef.1234567890abcdef
+
+    - name: tweak kubelet args
+      copy:
+        dest: /etc/default/kubelet
+        mode: 0600
+        content: |
+          KUBELET_EXTRA_ARGS="--fail-swap-on=false --cgroup-driver=cgroupfs"
+
+  tasks:
+    - name: "include kubernetes"
+      include_role:
+        name: "kubernetes"

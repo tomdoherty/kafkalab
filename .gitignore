@@ -1,0 +1,10 @@
+.cache
+kubeconfig.yaml
+__pycache__
+*.swp
+**/.terraform.*
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+venv

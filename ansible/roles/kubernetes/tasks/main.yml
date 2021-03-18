@@ -1,0 +1,132 @@
+---
+# tasks file for kubernetes
+#
+
+- name: determine mode
+  set_fact:
+    kubernetes_mode: "{{ ansible_local.cloudinit.kubernetes.mode }}"
+  when: ansible_local.cloudinit.kubernetes.mode is defined
+
+
+- name: configure yum
+  yum_repository:
+    name: kubernetes
+    description: Kubernetes
+    enabled: true
+    gpgcheck: true
+    repo_gpgcheck: true
+    baseurl: https://packages.cloud.google.com/yum/repos/kubernetes-el7-$basearch
+    gpgkey:
+      - https://packages.cloud.google.com/yum/doc/yum-key.gpg
+      - https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+
+
+- name: add gpg keys
+  rpm_key:
+    key: "{{ item }}"
+    state: present
+  register: kubernetes_rpm_key
+  with_items:
+      - https://packages.cloud.google.com/yum/doc/yum-key.gpg
+      - https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+
+
+- name: Add Docker repository.
+  get_url:
+    url: https://download.docker.com/linux/centos/docker-ce.repo
+    dest: '/etc/yum.repos.d/docker-ce.repo'
+    owner: root
+    group: root
+    mode: 0644
+
+
+- name: makecache
+  command: "yum -q makecache -y --disablerepo='*' --enablerepo='kubernetes'"
+  when: kubernetes_rpm_key is changed
+  args:
+    warn: false
+
+
+- name: install docker & kubernetes
+  package:
+    name:
+      - docker-ce
+      - kubelet
+      - kubeadm
+      - kubectl
+      - iscsi-initiator-utils
+
+- name: remove swapfile from /etc/fstab
+  mount:
+    name: "{{ item }}"
+    fstype: swap
+    state: absent
+  with_items: [ swap, none ]
+
+
+- name: swapoff
+  command: swapoff -a
+  when: ansible_swaptotal_mb > 0
+  tags: [ 'molecule-notest' ]
+
+
+- name: start docker & kubelet
+  service:
+    name: "{{ item }}"
+    state: started
+    enabled: yes
+  with_items: [ docker, kubelet ]
+
+
+- name: configure controller
+  block:
+    - name: check if already initialised
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: kubernetes_init_stat
+
+
+    - name: kubeadm init
+      command: >
+        kubeadm init
+        --apiserver-cert-extra-sans={{ ansible_host }}
+        --pod-network-cidr=10.244.0.0/16
+        --apiserver-advertise-address={{ ansible_default_ipv4.address }}
+        --ignore-preflight-errors=all
+        --token {{ kubernetes_token }}
+      when:
+        - not kubernetes_init_stat.stat.exists
+
+
+    - name: fetch remote kubeconfig
+      fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: kubeconfig.yaml
+        flat: yes
+
+
+    - name: update kubeconfig
+      lineinfile:
+        name: kubeconfig.yaml
+        regexp: "server:"
+        line: "    server: https://{{ ansible_host }}:6443"
+      connection: local
+      become: no
+      tags: [ molecule-notest ]
+
+  when:
+    - kubernetes_mode is defined
+    - kubernetes_mode == 'controller'
+
+
+- name: configure worker
+  block:
+    - name: kubeadm join
+      shell: >
+        kubeadm join --token {{ kubernetes_token }} --ignore-preflight-errors=all --discovery-token-unsafe-skip-ca-verification controller-0:6443
+        creates=/etc/kubernetes/kubelet.conf
+      tags: [ molecule-nolint ]
+
+  when:
+    - kubernetes_mode is defined
+    - kubernetes_mode == 'worker'
